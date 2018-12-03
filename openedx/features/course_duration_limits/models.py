@@ -86,6 +86,7 @@ class CourseDurationLimitConfig(StackedConfigurationModel):
         # if the user is has a role of staff, instructor or beta tester their access should not expire
         if user is None and enrollment is not None:
             user = enrollment.user
+        # import pudb; pudb.set_trace()
         if user:
             staff_role = CourseStaffRole(course_key).has_user(user)
             instructor_role = CourseInstructorRole(course_key).has_user(user)
@@ -96,7 +97,7 @@ class CourseDurationLimitConfig(StackedConfigurationModel):
 
             roles = [FORUM_ROLE_COMMUNITY_TA, FORUM_ROLE_GROUP_MODERATOR, FORUM_ROLE_MODERATOR,
                      FORUM_ROLE_ADMINISTRATOR]
-            if Role.user_has_role_for_course(user, course.id, roles):
+            if Role.user_has_role_for_course(user, course_key, roles):
                 return False
 
         # enrollment might be None if the user isn't enrolled. In that case,
