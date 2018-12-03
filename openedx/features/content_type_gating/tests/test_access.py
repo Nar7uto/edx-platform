@@ -26,7 +26,7 @@ from student.tests.factories import (
     UserFactory,
     TEST_PASSWORD
 )
-from xmodule.modulestore.tests.django_utils import SharedModuleStoreTestCase
+from xmodule.modulestore.tests.django_utils import ModuleStoreTestCase, SharedModuleStoreTestCase
 from xmodule.modulestore.tests.factories import CourseFactory, ItemFactory
 
 
@@ -504,4 +504,224 @@ class TestConditionalContentAccess(TestConditionalContent):
             course=self.course,
             is_gated=False,
             request_factory=self.factory,
+        )
+
+
+@override_settings(FIELD_OVERRIDE_PROVIDERS=(
+    'openedx.features.content_type_gating.field_override.ContentTypeGatingFieldOverride',
+))
+class TestMessageDeduplication(ModuleStoreTestCase):
+    """
+    Tests to verify that access denied messages isn't shown if multiple items in a row are denied.
+    Expected results:
+        - 0 items denied => No access denied messages
+        - 1+ items in a row denied => 1 access denied message
+        - If page has accessible content between access denied blocks, show both blocks.
+
+    NOTE: This uses `_assert_block_is_gated` to verify that the message is being shown (as that's
+    how it's currently tested). If that method changes to use something other than the template
+    message, this method's checks will need to be updated.
+    """
+
+    def setUp(self):
+        super(TestMessageDeduplication, self).setUp()
+
+        self.user = UserFactory.create()
+        self.request_factory = RequestFactory()
+        ContentTypeGatingConfig.objects.create(enabled=True, enabled_as_of=date(2018, 1, 1))
+
+    def _create_course(self):
+        course = CourseFactory.create(run='test', display_name='test')
+        CourseModeFactory.create(course_id=course.id, mode_slug='audit')
+        CourseModeFactory.create(course_id=course.id, mode_slug='verified')
+        blocks_dict = {}
+        with self.store.bulk_operations(course.id):
+            blocks_dict['chapter'] = ItemFactory.create(
+                parent=course,
+                category='chapter',
+                display_name='Week 1'
+            )
+            blocks_dict['sequential'] = ItemFactory.create(
+                parent=blocks_dict['chapter'],
+                category='sequential',
+                display_name='Lesson 1'
+            )
+            blocks_dict['vertical'] = ItemFactory.create(
+                parent=blocks_dict['sequential'],
+                category='vertical',
+                display_name='Lesson 1 Vertical - Unit 1'
+            )
+        return {
+            'course': course,
+            'blocks': blocks_dict,
+        }
+
+    def test_single_denied(self):
+        ''' Single graded problem should show error '''
+        course = self._create_course()
+        blocks_dict = course['blocks']
+        CourseEnrollmentFactory.create(
+            user=self.user,
+            course_id=course['course'].id,
+            mode='audit'
+        )
+        blocks_dict['graded_1'] = ItemFactory.create(
+            parent=blocks_dict['vertical'],
+            category='problem',
+            display_name='graded_problem',
+            graded=True,
+        )
+        _assert_block_is_gated(
+            block=blocks_dict['graded_1'],
+            user_id=self.user.id,
+            course=course['course'],
+            is_gated=True,
+            request_factory=self.request_factory,
+        )
+
+    def test_double_denied(self):
+        ''' First graded problem should show message, second shouldn't '''
+        course = self._create_course()
+        blocks_dict = course['blocks']
+        blocks_dict['graded_1'] = ItemFactory.create(
+            parent=blocks_dict['vertical'],
+            category='problem',
+            display_name='graded_problem',
+            graded=True,
+        )
+        blocks_dict['graded_2'] = ItemFactory.create(
+            parent=blocks_dict['vertical'],
+            category='problem',
+            display_name='graded_problem',
+            graded=True,
+        )
+        CourseEnrollmentFactory.create(
+            user=self.user,
+            course_id=course['course'].id,
+            mode='audit'
+        )
+        _assert_block_is_gated(
+            block=blocks_dict['graded_1'],
+            user_id=self.user.id,
+            course=course['course'],
+            is_gated=True,
+            request_factory=self.request_factory,
+        )
+        _assert_block_is_gated(
+            block=blocks_dict['graded_2'],
+            user_id=self.user.id,
+            course=course['course'],
+            is_gated=False,
+            request_factory=self.request_factory,
+        )
+
+    def test_many_denied(self):
+        ''' First graded problem should show message, all that follow shouldn't '''
+        course = self._create_course()
+        blocks_dict = course['blocks']
+        blocks_dict['graded_1'] = ItemFactory.create(
+            parent=blocks_dict['vertical'],
+            category='problem',
+            display_name='graded_problem',
+            graded=True,
+        )
+        blocks_dict['graded_2'] = ItemFactory.create(
+            parent=blocks_dict['vertical'],
+            category='problem',
+            display_name='graded_problem',
+            graded=True,
+        )
+        blocks_dict['graded_3'] = ItemFactory.create(
+            parent=blocks_dict['vertical'],
+            category='problem',
+            display_name='graded_problem',
+            graded=True,
+        )
+        blocks_dict['graded_4'] = ItemFactory.create(
+            parent=blocks_dict['vertical'],
+            category='problem',
+            display_name='graded_problem',
+            graded=True,
+        )
+        CourseEnrollmentFactory.create(
+            user=self.user,
+            course_id=course['course'].id,
+            mode='audit'
+        )
+        _assert_block_is_gated(
+            block=blocks_dict['graded_1'],
+            user_id=self.user.id,
+            course=course['course'],
+            is_gated=True,
+            request_factory=self.request_factory,
+        )
+        _assert_block_is_gated(
+            block=blocks_dict['graded_2'],
+            user_id=self.user.id,
+            course=course['course'],
+            is_gated=False,
+            request_factory=self.request_factory,
+        )
+        _assert_block_is_gated(
+            block=blocks_dict['graded_3'],
+            user_id=self.user.id,
+            course=course['course'],
+            is_gated=False,
+            request_factory=self.request_factory,
+        )
+        _assert_block_is_gated(
+            block=blocks_dict['graded_4'],
+            user_id=self.user.id,
+            course=course['course'],
+            is_gated=False,
+            request_factory=self.request_factory,
+        )
+
+    def test_alternate_denied(self):
+        ''' Multiple graded content with ungraded between it should show message on either end '''
+        course = self._create_course()
+        blocks_dict = course['blocks']
+        blocks_dict['graded_1'] = ItemFactory.create(
+            parent=blocks_dict['vertical'],
+            category='problem',
+            display_name='graded_problem',
+            graded=True,
+        )
+        blocks_dict['ungraded_2'] = ItemFactory.create(
+            parent=blocks_dict['vertical'],
+            category='problem',
+            display_name='ungraded_problem',
+            graded=False,
+        )
+        blocks_dict['graded_3'] = ItemFactory.create(
+            parent=blocks_dict['vertical'],
+            category='problem',
+            display_name='graded_problem',
+            graded=True,
+        )
+        CourseEnrollmentFactory.create(
+            user=self.user,
+            course_id=course['course'].id,
+            mode='audit'
+        )
+        _assert_block_is_gated(
+            block=blocks_dict['graded_1'],
+            user_id=self.user.id,
+            course=course['course'],
+            is_gated=True,
+            request_factory=self.request_factory,
+        )
+        _assert_block_is_gated(
+            block=blocks_dict['ungraded_2'],
+            user_id=self.user.id,
+            course=course['course'],
+            is_gated=False,
+            request_factory=self.request_factory,
+        )
+        _assert_block_is_gated(
+            block=blocks_dict['graded_3'],
+            user_id=self.user.id,
+            course=course['course'],
+            is_gated=True,
+            request_factory=self.request_factory,
         )
