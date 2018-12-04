@@ -107,11 +107,11 @@ class ZeroSubsectionGrade(SubsectionGradeBase):
         course.
         """
         locations = OrderedDict()  # dict of problem locations to ProblemScore
-        for block_key in self.course_data.structure.post_order_traversal(
-                filter_func=possibly_scored,
-                start_node=self.location,
+        for block_key in self.course_data.effective_structure.post_order_traversal(
+            filter_func=possibly_scored,
+            start_node=self.location,
         ):
-            block = self.course_data.structure[block_key]
+            block = self.course_data.effective_structure[block_key]
             if getattr(block, 'has_score', False):
                 problem_score = get_score(
                     submissions_scores={}, csm_scores={}, persisted_block=None, block=block,
@@ -198,7 +198,7 @@ class ReadSubsectionGrade(NonZeroSubsectionGrade):
         for block in self.model.visible_blocks.blocks:
             problem_score = self._compute_block_score(
                 block.locator,
-                self.factory.course_data.structure,
+                self.factory.course_data.effective_structure,
                 self.factory._submissions_scores,
                 self.factory._csm_scores,
                 block,
